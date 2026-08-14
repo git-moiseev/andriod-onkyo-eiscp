@@ -1,0 +1,42 @@
+# Android / IntelliJ
+*.iml
+.gradle/
+.gradle
+.idea/
+*.ipr
+*.iws
+local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+build/
+**/build/
+
+# Kotlin / Java
+*.class
+*.log
+*.ctxt
+hs_err_pid*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Generated
+*.apk
+*.ap_
+*.aab
+
+# Keystore files
+*.jks
+*.keystore
+
+# Signing / secrets
+*.p12
+*.pem
+
+# Gradle wrapper JAR is usually committed for Gradle 7+ but can be excluded if policies require it
+# gradle/wrapper/gradle-wrapper.jar
