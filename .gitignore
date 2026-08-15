@@ -26,7 +26,7 @@ Thumbs.db
 .vscode/
 
 # Generated
-*.apk
+# *.apk
 *.ap_
 *.aab
 
