@@ -65,6 +65,8 @@ class OnkyoClient(private val listener: Listener) {
         send("MVLQSTN")
         send("AMTQSTN")
         send("SLIQSTN")
+        send("LMDQSTN")
+        send("MOTQSTN")
     }
 
     private fun connectAndRead(info: ReceiverInfo, connectionId: Long) {

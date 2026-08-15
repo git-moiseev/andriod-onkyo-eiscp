@@ -148,6 +148,26 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             }
             c.startsWith("PWR") -> state = state.copy(powerOn = c.drop(3) == "01")
             c.startsWith("AMT") -> state = state.copy(muted = c.drop(3) == "01")
+            c.startsWith("LMD") -> {
+                val mode = c.drop(3).take(2).uppercase(Locale.US)
+                state = state.copy(
+                    listeningMode = mode,
+                    soundProfile = when (mode) {
+                        "01" -> "direct"
+                        "00" -> if (state.musicOptimizer) "optimizer_on" else "optimizer_off"
+                        else -> state.soundProfile
+                    }
+                )
+            }
+            c.startsWith("MOT") -> {
+                val optimizerOn = c.drop(3) == "01"
+                state = state.copy(
+                    musicOptimizer = optimizerOn,
+                    soundProfile = if (state.listeningMode == "00") {
+                        if (optimizerOn) "optimizer_on" else "optimizer_off"
+                    } else state.soundProfile
+                )
+            }
             c.startsWith("MVL") -> c.drop(3).take(2).toIntOrNull(16)?.let { state = state.copy(volume = it.coerceIn(0, 80)) }
             c.startsWith("SLI") -> state = state.copy(inputCode = c.drop(3).take(2).uppercase(Locale.US))
         }
@@ -251,13 +271,27 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }
         Box(Modifier.fillMaxSize().statusBarsPadding().background(Brush.verticalGradient(listOf(Color(0xFF090C10), Color(0xFF05070A)))).padding(7.dp)) {
             Column(Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).hardwarePanelBackground().border(1.dp, Color(0xFF262C32), RoundedCornerShape(14.dp)).padding(horizontal = 24.dp, vertical = 17.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                ReceiverStatus(controlsAvailable, if (!controlsAvailable && s.receiver == null) "Long tap to connect" else name(), s.discovering && !demoMode, !controlsAvailable && s.receiver == null, demoMode) {
-                    dialogIp = if (autoDiscoveryEnabled) s.receiver?.host.orEmpty() else s.receiverIp
-                    addressNotFound = false
-                    addressSearchRunning = false
-                    dialogAutoDiscovery = autoDiscoveryEnabled
-                    editingIp = true
-                }
+                ReceiverStatus(
+                    connected = controlsAvailable,
+                    name = if (!controlsAvailable && s.receiver == null) "Long tap to connect" else name(),
+                    discovering = s.discovering && !demoMode,
+                    connectionHint = !controlsAvailable && s.receiver == null,
+                    demo = demoMode,
+                    playbackStatus = when {
+                        s.muted -> "Muted"
+                        s.soundProfile == "direct" -> "Direct"
+                        s.soundProfile == "optimizer_on" -> "Stereo MoON"
+                        s.soundProfile == "optimizer_off" -> "Stereo MoOFF"
+                        else -> if (s.musicOptimizer) "Stereo MoON" else "Stereo MoOFF"
+                    },
+                    editIp = {
+                        dialogIp = if (autoDiscoveryEnabled) s.receiver?.host.orEmpty() else s.receiverIp
+                        addressNotFound = false
+                        addressSearchRunning = false
+                        dialogAutoDiscovery = autoDiscoveryEnabled
+                        editingIp = true
+                    }
+                )
                 Spacer(Modifier.height(23.dp))
                 PowerAndHeadphones(s.powerOn, controlsAvailable, ::toggleDemoMode) {
                     val next = !state.powerOn
@@ -274,12 +308,28 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 PanelLabel("MASTER VOLUME")
                 Spacer(Modifier.height(14.dp))
                 BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.TopCenter) {
-                    VolumeKnob(s.volume, controlsAvailable && s.powerOn, s.muted, minOf(maxWidth * .80f, maxHeight),
+                    VolumeKnob(s.volume, controlsAvailable && s.powerOn, s.muted, s.soundProfile, minOf(maxWidth * .80f, maxHeight),
                         { state = state.copy(volume = it) },
                         { if (!demoMode) client.send("MVL${state.volume.toString(16).uppercase(Locale.US).padStart(2, '0')}") },
+                        {
+                            if (controlsAvailable && !s.muted) when (s.soundProfile) {
+                                "direct" -> {
+                                    state = state.copy(listeningMode = "00", musicOptimizer = true, soundProfile = "optimizer_on")
+                                    if (!demoMode) { client.send("LMD00"); client.send("MOT01") }
+                                }
+                                "optimizer_on" -> {
+                                    state = state.copy(musicOptimizer = false, soundProfile = "optimizer_off")
+                                    if (!demoMode) client.send("MOT00")
+                                }
+                                else -> {
+                                    state = state.copy(listeningMode = "01", soundProfile = "direct")
+                                    if (!demoMode) client.send("LMD01")
+                                }
+                            }
+                        },
                         { if (controlsAvailable) { val next = !state.muted; state = state.copy(muted = next); if (!demoMode) client.send(if (next) "AMT01" else "AMT00") } })
                 }
-                Text("Drag the knob or tap the center to mute.", color = Color(0xFF8D95A0), fontSize = 9.sp, lineHeight = 12.75.sp, textAlign = TextAlign.Center)
+                Text("Drag the knob. Tap center for sound mode; hold to mute.", color = Color(0xFF8D95A0), fontSize = 9.sp, lineHeight = 12.75.sp, textAlign = TextAlign.Center)
             }
         }
     }
@@ -327,7 +377,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     }
 
     @OptIn(ExperimentalFoundationApi::class)
-    @Composable private fun ReceiverStatus(connected: Boolean, name: String, discovering: Boolean, connectionHint: Boolean, demo: Boolean, editIp: () -> Unit) {
+    @Composable private fun ReceiverStatus(connected: Boolean, name: String, discovering: Boolean, connectionHint: Boolean, demo: Boolean, playbackStatus: String, editIp: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -345,7 +395,14 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             Box(Modifier.size(6.dp).shadow(if (connected) 3.dp else 0.dp, CircleShape, spotColor = Color(0x8820B86C)).background(Brush.radialGradient(if (connected) listOf(Color(0xFFA6D7B8), Color(0xFF399C68), Color(0xFF185237)) else listOf(Color(0xFF737B83), Color(0xFF3D444B))), CircleShape).border(0.5.dp, if (connected) Color(0x554BA878) else Color(0x553D444B), CircleShape))
             Spacer(Modifier.width(6.dp)); Text(if (discovering) "Searching" else name, color = if (connected) Color(0xFF83B99A) else Color(0xFF929BA4), fontSize = 16.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             if (!connectionHint) {
-            Text(" ${if (demo) "DEMO" else if (connected) "Connected" else "Disconnected"}", color = if (connected) Color(0xFF83B99A) else Color(0xFF7D858D), fontSize = 16.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+            Text(
+                " ${if (demo) "DEMO" else if (connected) playbackStatus else "Disconnected"}",
+                color = if (connected && !demo && playbackStatus == "Muted") Color(0xFFC86F6F)
+                else if (connected) Color(0xFF83B99A) else Color(0xFF7D858D),
+                fontSize = 16.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1
+            )
             }
         }
     }
@@ -482,7 +539,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         val pressed by interaction.collectIsPressedAsState()
         val pressOffset by animateDpAsState(if (pressed) 2.dp else 0.dp, label = "inputPress")
         val haptic = LocalHapticFeedback.current
-        Box(modifier.offset(y = pressOffset).height(48.dp).shadow(if (pressed) 0.dp else 1.5.dp, RoundedCornerShape(4.dp), ambientColor = Color(0x99000000), spotColor = Color(0x99000000)).hardwareInputSurface(pressed).combinedClickable(enabled = enabled, interactionSource = interaction, indication = null, onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); click() }, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); longClick() }).padding(horizontal = 7.dp), contentAlignment = Alignment.CenterStart) {
+        Box(modifier.offset(y = pressOffset).height(48.dp).shadow(if (pressed) 0.dp else 1.5.dp, RoundedCornerShape(4.dp), ambientColor = Color(0x99000000), spotColor = Color(0x99000000)).hardwareInputSurface(pressed).combinedClickable(interactionSource = interaction, indication = null, onClick = { if (enabled) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); click() } }, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); longClick() }).padding(horizontal = 7.dp), contentAlignment = Alignment.CenterStart) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(6.dp).shadow(if (selected) 5.dp else 0.dp, CircleShape, spotColor = Color(0xFF24E78A)).background(Brush.radialGradient(if (selected) listOf(Color(0xFFD5FBE7), Color(0xFF24B96F), Color(0xFF075332)) else listOf(Color(0xFF555C63), Color(0xFF30363B))), CircleShape)); Spacer(Modifier.width(6.dp))
                 Text(label, color = Color(0xFFBEC4C9), fontSize = 13.sp, lineHeight = 14.5.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
@@ -578,7 +635,8 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         )
     }
 
-    @Composable private fun VolumeKnob(value: Int, enabled: Boolean, muted: Boolean, diameter: Dp, change: (Int) -> Unit, finish: () -> Unit, mute: () -> Unit) {
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable private fun VolumeKnob(value: Int, enabled: Boolean, muted: Boolean, soundProfile: String, diameter: Dp, change: (Int) -> Unit, finish: () -> Unit, cycleMode: () -> Unit, mute: () -> Unit) {
         val ticks = 41
         val haptic = LocalHapticFeedback.current
         val latestVolume = rememberUpdatedState(value)
@@ -632,9 +690,41 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 } else drawLine(Color(0xFF555C64), indicatorStart, indicatorEnd, size.width * .025f, StrokeCap.Round)
             }
             Text(value.toString(), color = if (enabled) Color(0xFFDDF6FF) else Color(0xFF858B92), fontSize = 34.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, style = TextStyle(shadow = Shadow(Color(0x9968C9FF), blurRadius = 12f)), modifier = Modifier.align(Alignment.Center).offset(y = (-45.5).dp))
-            Box(Modifier.align(Alignment.Center).size(48.dp).clip(CircleShape).clickable(enabled = enabled) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); mute() }, contentAlignment = Alignment.Center) { SpeakerIcon(muted && enabled, enabled) }
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .combinedClickable(
+                        enabled = enabled,
+                        onClick = { if (!muted) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); cycleMode() } },
+                        onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); mute() }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (muted && enabled) SpeakerIcon(muted = true, enabled = true)
+                else MusicNoteIcon(soundProfile, enabled)
+            }
         }
     }
+    @Composable private fun MusicNoteIcon(soundProfile: String, enabled: Boolean) { Canvas(Modifier.size(34.dp)) {
+        val color = if (!enabled) Color(0xFF626970) else when (soundProfile) {
+            "optimizer_on" -> Color(0xFF74C8EE)
+            "optimizer_off" -> Color(0xFF6DBB82)
+            else -> Color(0xFFE3E7EA)
+        }
+        val glow = color.copy(alpha = if (enabled) .25f else 0f)
+        drawCircle(glow, size.minDimension * .24f, Offset(size.width * .34f, size.height * .72f))
+        drawCircle(color, size.minDimension * .14f, Offset(size.width * .31f, size.height * .74f))
+        drawLine(color, Offset(size.width * .43f, size.height * .72f), Offset(size.width * .43f, size.height * .22f), size.width * .075f, StrokeCap.Round)
+        val flag = Path().apply {
+            moveTo(size.width * .43f, size.height * .22f)
+            cubicTo(size.width * .68f, size.height * .25f, size.width * .79f, size.height * .37f, size.width * .76f, size.height * .51f)
+            cubicTo(size.width * .67f, size.height * .40f, size.width * .56f, size.height * .37f, size.width * .43f, size.height * .38f)
+            close()
+        }
+        drawPath(flag, color)
+    } }
     @Composable private fun SpeakerIcon(muted: Boolean, enabled: Boolean) { Canvas(Modifier.size(42.75.dp)) {
         val color = if (!enabled) Color(0xFF626970) else if (muted) Color(0xFFE28C8C) else Color(0xFF9CA8B5); val p = Path().apply { moveTo(size.width*.12f,size.height*.4f); lineTo(size.width*.34f,size.height*.4f); lineTo(size.width*.56f,size.height*.2f); lineTo(size.width*.56f,size.height*.8f); lineTo(size.width*.34f,size.height*.6f); lineTo(size.width*.12f,size.height*.6f); close() }; drawPath(p,color)
         drawArc(color,-55f,110f,false,Offset(size.width*.48f,size.height*.29f),Size(size.width*.27f,size.height*.42f),style=Stroke(1.7f)); drawArc(color,-55f,110f,false,Offset(size.width*.45f,size.height*.17f),Size(size.width*.45f,size.height*.66f),style=Stroke(1.7f)); if(muted) drawLine(color,Offset(size.width*.63f,size.height*.32f),Offset(size.width*.94f,size.height*.68f),2f)
