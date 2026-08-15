@@ -2,6 +2,8 @@
 
 Native Android remote control for Onkyo and Integra receivers that support the eISCP protocol. The application is written in Kotlin with Jetpack Compose and uses direct UDP/TCP sockets; it does not embed Python or require a web server.
 
+![Onkyo Remote](doc/screen.jpg)
+
 The interface deliberately resembles a dark hi-fi front panel rather than a standard Android control screen. Its main control is a custom-drawn 270-degree volume knob with hardware-style lighting, texture, haptics, and touch gestures.
 
 ## Features
