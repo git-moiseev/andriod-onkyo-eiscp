@@ -273,10 +273,9 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             Column(Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).hardwarePanelBackground().border(1.dp, Color(0xFF262C32), RoundedCornerShape(14.dp)).padding(horizontal = 24.dp, vertical = 17.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 ReceiverStatus(
                     connected = controlsAvailable,
-                    name = if (!controlsAvailable && s.receiver == null) "Long tap to connect" else name(),
+                    name = if (demoMode) "DEMO" else if (!controlsAvailable && s.receiver == null) "Long tap to connect" else name(),
                     discovering = s.discovering && !demoMode,
                     connectionHint = !controlsAvailable && s.receiver == null,
-                    demo = demoMode,
                     playbackStatus = when {
                         s.muted -> "Muted"
                         s.soundProfile == "direct" -> "Direct"
@@ -377,7 +376,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     }
 
     @OptIn(ExperimentalFoundationApi::class)
-    @Composable private fun ReceiverStatus(connected: Boolean, name: String, discovering: Boolean, connectionHint: Boolean, demo: Boolean, playbackStatus: String, editIp: () -> Unit) {
+    @Composable private fun ReceiverStatus(connected: Boolean, name: String, discovering: Boolean, connectionHint: Boolean, playbackStatus: String, editIp: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -396,8 +395,8 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             Spacer(Modifier.width(6.dp)); Text(if (discovering) "Searching" else name, color = if (connected) Color(0xFF83B99A) else Color(0xFF929BA4), fontSize = 16.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             if (!connectionHint) {
             Text(
-                " ${if (demo) "DEMO" else if (connected) playbackStatus else "Disconnected"}",
-                color = if (connected && !demo && playbackStatus == "Muted") Color(0xFFC86F6F)
+                " ${if (connected) playbackStatus else "Disconnected"}",
+                color = if (connected && playbackStatus == "Muted") Color(0xFFC86F6F)
                 else if (connected) Color(0xFF83B99A) else Color(0xFF7D858D),
                 fontSize = 16.sp,
                 fontFamily = FontFamily.Monospace,
