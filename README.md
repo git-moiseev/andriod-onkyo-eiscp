@@ -20,7 +20,7 @@ Native Android remote control for Onkyo and Integra receivers. It communicates t
 
 ## Download
 
-[Download the latest APK](https://raw.githubusercontent.com/git-moiseev/andriod-onkyo-eiscp/main/releases/latest/OnkyoRemote.apk)
+[Download the latest APK](https://raw.githubusercontent.com/git-moiseev/onkyo-eiscp-android/main/releases/latest/OnkyoRemote.apk)
 
 The interface deliberately resembles a dark hi-fi front panel rather than a standard Android control screen. Its main control is a custom-drawn 270-degree volume knob with hardware-style lighting, texture, haptics, and touch gestures.
 
