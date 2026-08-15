@@ -1,6 +1,20 @@
 # Onkyo Remote for Android
 
-Native Android remote control for Onkyo and Integra receivers that support the eISCP protocol. The application is written in Kotlin with Jetpack Compose and uses direct UDP/TCP sockets; it does not embed Python or require a web server.
+Native Android remote control for Onkyo and Integra receivers. It communicates through eISCP, the Ethernet version of the Integra Serial Control Protocol documented by Onkyo Corporation. The protocol implementation and command mapping are based on the excellent Python project [`miracle2k/onkyo-eiscp`](https://github.com/miracle2k/onkyo-eiscp), rewritten here as a native Kotlin application with no Python runtime or web server required.
+
+## What it can do
+
+- Automatically discover compatible eISCP receivers on the local network, or connect to a manually entered IP address.
+- Keep finding a receiver through Auto-discover if its DHCP address changes.
+- Turn the receiver on and off.
+- Select an input with a short tap.
+- Give every input a custom name with a long press; names are remembered between launches and application updates.
+- Control volume with a large hardware-style knob, haptic feedback, and protection against dangerous accidental volume jumps.
+- Switch between Direct, Stereo with Music Optimizer ON, and Stereo with Music Optimizer OFF by tapping the center of the knob.
+- Mute or restore playback with a long press on the knob center.
+- Follow power, input, volume, mute, and sound-mode changes made on the receiver or another remote.
+- Reconnect automatically when the application returns to the foreground.
+- Run in Demo mode without a receiver, using a long press on the `PHONES` socket.
 
 ![Onkyo Remote](doc/screen.jpg)
 
