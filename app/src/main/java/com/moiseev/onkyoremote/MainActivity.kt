@@ -2,6 +2,8 @@ package com.moiseev.onkyoremote
 
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -23,6 +25,7 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -49,6 +52,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     private var demoMode by mutableStateOf(false)
     private var hasStartedOnce = false
     private lateinit var client: OnkyoClient
+    private val commandHandler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
     private var pendingNetworkAction: (() -> Unit)? = null
     private val localNetworkPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -325,7 +329,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 }
                 Spacer(Modifier.height(13.dp))
                 PanelLabel("INPUTS", onLongClick = { arrangingInputs = true })
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(13.dp))
                 InputSelector(s.inputCode, controlsAvailable && s.powerOn, s.powerOn,
                     select = { state = state.copy(inputCode = it); if (!demoMode) client.send("SLI$it") },
                     rename = { editingCode = it })
@@ -340,7 +344,15 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                             if (controlsAvailable && !s.muted) when (s.soundProfile) {
                                 "direct" -> {
                                     state = state.copy(listeningMode = "00", musicOptimizer = true, soundProfile = "optimizer_on")
-                                    if (!demoMode) { client.send("LMD00"); client.send("MOT01") }
+                                    if (!demoMode) {
+                                        client.send("LMD00")
+                                        // The receiver needs a moment to enter Stereo before it accepts MOT.
+                                        commandHandler.postDelayed({
+                                            if (state.connected && state.listeningMode == "00" && state.soundProfile == "optimizer_on") {
+                                                client.send("MOT01")
+                                            }
+                                        }, 350L)
+                                    }
                                 }
                                 "optimizer_on" -> {
                                     state = state.copy(musicOptimizer = false, soundProfile = "optimizer_off")
@@ -370,9 +382,15 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             center = Offset(size.width * .43f, size.height * .34f),
             radius = size.maxDimension * .82f
         )
+        val upperLeftLight = Brush.radialGradient(
+            colors = listOf(Color(0x324E5C66), Color(0x1C35434D), Color(0x08232D35), Color.Transparent),
+            center = Offset(-size.width * .04f, size.height * .02f),
+            radius = size.maxDimension * .62f
+        )
         onDrawBehind {
             drawRect(base)
             drawRect(softLight)
+            drawRect(upperLeftLight)
 
             // Barely visible matte grain; material is communicated by edges, not decoration.
             repeat(380) { index ->
@@ -387,17 +405,33 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }
     }
 
-    private fun Modifier.hardwareInputSurface(pressed: Boolean): Modifier = drawWithCache {
+    private fun Modifier.hardwareInputSurface(pressed: Boolean, directionalHighlight: Boolean = false, highlightSeed: Int = 0): Modifier = drawWithCache {
         val corner = CornerRadius(4.dp.toPx())
         val face = Brush.verticalGradient(
             if (pressed) listOf(Color(0xFF111519), Color(0xFF20262B))
             else listOf(Color(0xFF20252A), Color(0xFF151A1E), Color(0xFF0C1013))
         )
+        val variation = ((highlightSeed and 0xFF) / 255f - .5f)
+        val highlightAlpha = (if (pressed) .10f else .22f) * (.82f + abs(variation) * .32f)
+        val machinedHighlight = Brush.radialGradient(
+            colors = listOf(
+                Color(0xFF9AAAB3).copy(alpha = highlightAlpha),
+                Color(0xFF65747D).copy(alpha = highlightAlpha * .48f),
+                Color.Transparent
+            ),
+            center = Offset(size.width * (.24f + variation * .10f), -size.height * (.08f + variation * .05f)),
+            radius = size.width * (.72f + variation * .08f)
+        )
         onDrawBehind {
             drawRoundRect(face, cornerRadius = corner)
+            if (directionalHighlight) drawRoundRect(machinedHighlight, cornerRadius = corner)
             drawLine(Color(0x385D666D), Offset(4.dp.toPx(), .7.dp.toPx()), Offset(size.width - 4.dp.toPx(), .7.dp.toPx()), .45.dp.toPx())
             drawLine(Color(0xCC050709), Offset(4.dp.toPx(), size.height - .8.dp.toPx()), Offset(size.width - 4.dp.toPx(), size.height - .8.dp.toPx()), .7.dp.toPx())
-            drawRoundRect(Color(0xFF2B3237), cornerRadius = corner, style = Stroke(.55.dp.toPx()))
+            drawRoundRect(
+                if (directionalHighlight) Color(0xFF4A555C) else Color(0xFF2B3237),
+                cornerRadius = corner,
+                style = Stroke(if (directionalHighlight) .8.dp.toPx() else .55.dp.toPx())
+            )
         }
     }
 
@@ -478,6 +512,21 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     ),
                     faceRadius, c
                 )
+                drawCircle(
+                    Brush.linearGradient(
+                        colorStops = arrayOf(
+                            0.00f to Color.Transparent,
+                            0.38f to Color.Transparent,
+                            0.50f to Color(0x2E9AADB8),
+                            0.58f to Color(0x145D6C75),
+                            0.76f to Color.Transparent,
+                            1.00f to Color(0x28000000)
+                        ),
+                        start = Offset(c.x - faceRadius, c.y - faceRadius),
+                        end = Offset(c.x + faceRadius, c.y + faceRadius)
+                    ),
+                    faceRadius, c
+                )
                 drawCircle(Color(0xFF30373B), faceRadius, c, style = Stroke(size.width * .008f))
                 for (ring in 1..11) {
                     drawCircle(
@@ -524,10 +573,10 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     @Composable private fun PanelLabel(text: String, onLongClick: (() -> Unit)? = null) {
         Text(
             text = text,
-            color = Color(0xFF858C95),
-            fontSize = 10.sp,
+            color = Color(0xFF8A929A),
+            fontSize = 12.sp,
             letterSpacing = 2.sp,
-            fontWeight = FontWeight.Medium,
+            fontWeight = FontWeight.Light,
             maxLines = 1,
             modifier = if (onLongClick == null) Modifier else Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
         )
@@ -536,7 +585,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     @OptIn(ExperimentalFoundationApi::class)
     @Composable private fun HeadphoneJack(toggleDemo: () -> Unit) {
         val haptic = LocalHapticFeedback.current
-        Canvas(Modifier.size(26.45.dp).combinedClickable(onClick = {}, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); toggleDemo() })) {
+        Canvas(Modifier.size(38.09.dp).combinedClickable(onClick = {}, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); toggleDemo() })) {
             val c = center
             drawCircle(Color(0x55000000), size.minDimension * .50f, c + Offset(1.2f, 1.5f))
             drawCircle(
@@ -548,9 +597,21 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 size.minDimension * .46f,
                 c
             )
-            drawCircle(Color(0xFF080A0C), size.minDimension * .31f, c)
-            drawCircle(Color(0xFF252A2D), size.minDimension * .23f, c)
-            drawCircle(Color(0xFF050607), size.minDimension * .17f, c)
+            drawCircle(Color(0xFF343A3E), size.minDimension * .356f, c)
+            drawCircle(Color(0xFF030405), size.minDimension * .316f, c)
+            val contactDistance = size.minDimension * .316f - 2.dp.toPx() - size.minDimension * .045f
+            rotate(60f, pivot = c) {
+                val contactCenter = c + Offset(contactDistance, 0f)
+                drawOval(
+                    Brush.radialGradient(
+                        colors = listOf(Color(0xFF5A4627), Color(0xFF352613), Color(0xFF160F08)),
+                        center = contactCenter - Offset(size.width * .018f, size.height * .025f),
+                        radius = size.minDimension * .12f
+                    ),
+                    topLeft = Offset(contactCenter.x - size.width * .045f, contactCenter.y - size.height * .105f),
+                    size = Size(size.width * .09f, size.height * .21f)
+                )
+            }
             drawArc(
                 color = Color(0xAAFFF0C5),
                 startAngle = 205f,
@@ -566,20 +627,20 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     @Composable private fun InputSelector(selected: String, enabled: Boolean, receiverOn: Boolean, select: (String) -> Unit, rename: (String) -> Unit) {
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) { orderedInputs().chunked(3).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { row.forEach { (defaultName, code) ->
-                InputButton(state.customInputNames[code] ?: defaultName, receiverOn && selected == code, enabled, { select(code) }, { rename(code) }, Modifier.weight(1f))
+                InputButton(state.customInputNames[code] ?: defaultName, code.hashCode(), receiverOn && selected == code, enabled, { select(code) }, { rename(code) }, Modifier.weight(1f))
             } }
         } }
     }
     @OptIn(ExperimentalFoundationApi::class)
-    @Composable private fun InputButton(label: String, selected: Boolean, enabled: Boolean, click: () -> Unit, longClick: () -> Unit, modifier: Modifier) {
+    @Composable private fun InputButton(label: String, highlightSeed: Int, selected: Boolean, enabled: Boolean, click: () -> Unit, longClick: () -> Unit, modifier: Modifier) {
         val interaction = remember { MutableInteractionSource() }
         val pressed by interaction.collectIsPressedAsState()
         val pressOffset by animateDpAsState(if (pressed) 2.dp else 0.dp, label = "inputPress")
         val haptic = LocalHapticFeedback.current
-        Box(modifier.offset(y = pressOffset).height(48.dp).shadow(if (pressed) 0.dp else 1.5.dp, RoundedCornerShape(4.dp), ambientColor = Color(0x99000000), spotColor = Color(0x99000000)).hardwareInputSurface(pressed).combinedClickable(interactionSource = interaction, indication = null, onClick = { if (enabled) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); click() } }, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); longClick() }).padding(horizontal = 7.dp), contentAlignment = Alignment.CenterStart) {
+        Box(modifier.offset(y = pressOffset).height(48.dp).shadow(if (pressed) 0.dp else 1.5.dp, RoundedCornerShape(4.dp), ambientColor = Color(0x99000000), spotColor = Color(0x99000000)).hardwareInputSurface(pressed, directionalHighlight = true, highlightSeed = highlightSeed).combinedClickable(interactionSource = interaction, indication = null, onClick = { if (enabled) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); click() } }, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); longClick() }).padding(horizontal = 7.dp), contentAlignment = Alignment.CenterStart) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(6.dp).shadow(if (selected) 5.dp else 0.dp, CircleShape, spotColor = Color(0xFF24E78A)).background(Brush.radialGradient(if (selected) listOf(Color(0xFFD5FBE7), Color(0xFF24B96F), Color(0xFF075332)) else listOf(Color(0xFF555C63), Color(0xFF30363B))), CircleShape)); Spacer(Modifier.width(6.dp))
-                Text(label, color = Color(0xFFBEC4C9), fontSize = 13.sp, lineHeight = 14.5.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                Box(Modifier.size(6.dp).shadow(if (selected) 5.dp else 0.dp, CircleShape, spotColor = Color(0xFF24E78A)).background(Brush.radialGradient(if (selected) listOf(Color(0xFFD5FBE7), Color(0xFF24B96F), Color(0xFF075332)) else listOf(Color(0xFF555C63), Color(0xFF30363B))), CircleShape)); Spacer(Modifier.width(3.dp))
+                Text(label, color = Color(0xFFBEC4C9), fontSize = 13.sp, lineHeight = 14.5.sp, fontWeight = FontWeight.Light, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().offset(x = (-1).dp))
             }
         }
     }
@@ -775,7 +836,17 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }, contentAlignment = Alignment.Center) {
             Canvas(Modifier.fillMaxSize()) {
                 val c = center; val outer = size.minDimension * .485f; val active = (value / 80f * (ticks - 1)).roundToInt()
-                drawCircle(Brush.radialGradient(listOf(Color(0xFF29303A), Color(0xFF11161C), Color(0xFF080B0F))), outer, c); drawCircle(Color(0xFF323943), outer, c, style = Stroke(size.width * .008f))
+                val activeSweep = 270f * value / 80f
+                if (enabled && activeSweep > 0f) {
+                    val haloRadius = outer * .965f
+                    val haloBounds = Size(haloRadius * 2f, haloRadius * 2f)
+                    val haloTopLeft = Offset(c.x - haloRadius, c.y - haloRadius)
+                    drawArc(Color(0x1268C9FF), 135f, activeSweep, false, haloTopLeft, haloBounds, style = Stroke(size.width * .085f, cap = StrokeCap.Round))
+                    drawArc(Color(0x1A68C9FF), 135f, activeSweep, false, haloTopLeft, haloBounds, style = Stroke(size.width * .050f, cap = StrokeCap.Round))
+                    drawArc(Color(0x249ADFFF), 135f, activeSweep, false, haloTopLeft, haloBounds, style = Stroke(size.width * .025f, cap = StrokeCap.Round))
+                }
+                drawCircle(Brush.radialGradient(listOf(Color(0xFF29303A), Color(0xFF11161C), Color(0xFF080B0F))), outer, c)
+                drawCircle(Color(0xFF323943), outer, c, style = Stroke(size.width * .008f))
                 repeat(ticks) { i ->
                     val r = (135f + 270f * i / (ticks - 1)) * PI / 180; val inner = outer * if (i % 5 == 0) .79f else .82f; val end = outer * .94f
                     val start = Offset(c.x + cos(r).toFloat() * inner, c.y + sin(r).toFloat() * inner)
@@ -786,7 +857,25 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                         drawLine(Color(0xFFD0F2FF), start, finish, size.width * .007f, StrokeCap.Round)
                     } else drawLine(Color(0xFF505762), start, finish, size.width * .007f, StrokeCap.Round)
                 }
-                val dial = outer * .76f; drawCircle(Brush.radialGradient(listOf(Color(0xFF2B323D), Color(0xFF171C24), Color(0xFF10141A))), dial, c); drawCircle(Color(0xFF343B45), dial, c, style = Stroke(size.width * .006f))
+                val dial = outer * .76f
+                drawCircle(Brush.radialGradient(listOf(Color(0xFF2B323D), Color(0xFF171C24), Color(0xFF10141A))), dial, c)
+                drawCircle(
+                    Brush.linearGradient(
+                        colorStops = arrayOf(
+                            0.00f to Color.Transparent,
+                            0.34f to Color.Transparent,
+                            0.47f to Color(0x185D6D78),
+                            0.52f to Color(0x327F929E),
+                            0.58f to Color(0x14515F68),
+                            0.75f to Color.Transparent,
+                            1.00f to Color(0x26000000)
+                        ),
+                        start = Offset(c.x - dial, c.y - dial),
+                        end = Offset(c.x + dial, c.y + dial)
+                    ),
+                    dial, c
+                )
+                drawCircle(Color(0xFF343B45), dial, c, style = Stroke(size.width * .006f))
                 for (groove in 1..5) drawCircle(Color(0x0DFFFFFF), dial * (0.70f + groove * .045f), c, style = Stroke(size.width * .002f))
                 val r = (135f + 270f * value / 80f) * PI / 180
                 val indicatorStart = Offset(c.x + cos(r).toFloat() * dial * .76f, c.y + sin(r).toFloat() * dial * .76f)
@@ -797,11 +886,11 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     drawLine(Color(0xFFE6F8FF), indicatorStart, indicatorEnd, size.width * .016f, StrokeCap.Round)
                 } else drawLine(Color(0xFF555C64), indicatorStart, indicatorEnd, size.width * .025f, StrokeCap.Round)
             }
-            Text(value.toString(), color = if (enabled) Color(0xFFDDF6FF) else Color(0xFF858B92), fontSize = 34.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, style = TextStyle(shadow = Shadow(Color(0x9968C9FF), blurRadius = 12f)), modifier = Modifier.align(Alignment.Center).offset(y = (-45.5).dp))
+            Text(value.toString(), color = if (enabled) Color(0xFFDDF6FF) else Color(0xFF858B92), fontSize = 34.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, style = TextStyle(shadow = Shadow(Color(0x9968C9FF), blurRadius = 12f)), modifier = Modifier.align(Alignment.Center).offset(y = 47.6.dp))
             Box(
                 Modifier
                     .align(Alignment.Center)
-                    .size(48.dp)
+                    .size(59.4.dp)
                     .clip(CircleShape)
                     .combinedClickable(
                         enabled = enabled,
@@ -810,6 +899,67 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     ),
                 contentAlignment = Alignment.Center
             ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val buttonCenter = center
+                    val radius = size.minDimension * .48f
+                    val modeColor = when {
+                        !enabled -> Color(0xFF626970)
+                        muted -> Color(0xFFC86F6F)
+                        soundProfile == "optimizer_on" -> Color(0xFF74C8EE)
+                        soundProfile == "optimizer_off" -> Color(0xFF6DBB82)
+                        else -> Color(0xFFE3E7EA)
+                    }
+
+                    // Deep mounting recess and the thin machined rim.
+                    drawCircle(Color(0x99000000), radius, buttonCenter + Offset(0f, size.height * .035f))
+                    drawCircle(
+                        Brush.radialGradient(
+                            listOf(Color(0xFF050607), Color(0xFF171B1F), Color(0xFF020304)),
+                            center = buttonCenter - Offset(size.width * .08f, size.height * .10f),
+                            radius = radius
+                        ),
+                        radius,
+                        buttonCenter
+                    )
+                    drawCircle(Color(0xFF41474B), radius * .91f, buttonCenter)
+                    drawCircle(Color(0xFF080A0C), radius * .84f, buttonCenter)
+
+                    // Slightly concave metal face, deliberately dim like the other controls.
+                    drawCircle(
+                        Brush.radialGradient(
+                            listOf(Color(0xFF252A2E), Color(0xFF15191D), Color(0xFF090B0D)),
+                            center = buttonCenter - Offset(size.width * .13f, size.height * .15f),
+                            radius = radius * 1.25f
+                        ),
+                        radius * .76f,
+                        buttonCenter
+                    )
+                    drawCircle(
+                        Brush.linearGradient(
+                            colorStops = arrayOf(
+                                0.00f to Color.Transparent,
+                                0.34f to Color.Transparent,
+                                0.48f to Color(0x205D6D78),
+                                0.53f to Color(0x3A8B9DA7),
+                                0.60f to Color(0x18515F68),
+                                0.76f to Color.Transparent,
+                                1.00f to Color(0x26000000)
+                            ),
+                            start = Offset(buttonCenter.x - radius, buttonCenter.y - radius),
+                            end = Offset(buttonCenter.x + radius, buttonCenter.y + radius)
+                        ),
+                        radius * .76f,
+                        buttonCenter
+                    )
+                    drawCircle(Color(0x2EFFFFFF), radius * .75f, buttonCenter, style = Stroke(size.width * .012f))
+                    if (enabled) {
+                        drawCircle(
+                            Brush.radialGradient(listOf(modeColor.copy(alpha = .10f), Color.Transparent)),
+                            radius * .68f,
+                            buttonCenter
+                        )
+                    }
+                }
                 if (muted && enabled) SpeakerIcon(muted = true, enabled = true)
                 else MusicNoteIcon(soundProfile, enabled)
             }
