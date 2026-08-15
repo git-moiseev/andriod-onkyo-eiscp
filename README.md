@@ -9,6 +9,7 @@ Native Android remote control for Onkyo and Integra receivers. It communicates t
 - Turn the receiver on and off.
 - Select an input with a short tap.
 - Give every input a custom name with a long press; names are remembered between launches and application updates.
+- Arrange the input buttons by long-pressing the `INPUTS` label and dragging any input directly to any position.
 - Control volume with a large hardware-style knob, haptic feedback, and protection against dangerous accidental volume jumps.
 - Switch between Direct, Stereo with Music Optimizer ON, and Stereo with Music Optimizer OFF by tapping the center of the knob.
 - Mute or restore playback with a long press on the knob center.
@@ -20,7 +21,7 @@ Native Android remote control for Onkyo and Integra receivers. It communicates t
 
 ## Download
 
-[Download the latest APK](https://raw.githubusercontent.com/git-moiseev/onkyo-eiscp-android/main/releases/latest/OnkyoRemote.apk)
+[Download the latest release](https://github.com/git-moiseev/onkyo-eiscp-android/releases)
 
 The interface deliberately resembles a dark hi-fi front panel rather than a standard Android control screen. Its main control is a custom-drawn 270-degree volume knob with hardware-style lighting, texture, haptics, and touch gestures.
 
@@ -62,20 +63,28 @@ A long press toggles mute:
 - short taps are ignored while muted;
 - another long press restores playback and the musical-note indicator.
 
-The status display shows the corresponding state, for example:
+The status display shows the corresponding state. Long lines scroll together with the receiver model like a hardware front-panel display:
 
 ```text
 DTM-40.4 Direct
-DTM-40.4 Stereo MoON
-DTM-40.4 Stereo MoOFF
+DTM-40.4 Stereo, Music Optimizer On
+DTM-40.4 Stereo, Music Optimizer Off
+DTM-40.4 Mono
 DTM-40.4 Muted
+DTM-40.4 Standby
 ```
 
 Only `Muted` is displayed in red; other status text remains green.
 
+When receiver power is off but its network interface remains reachable, the display shows `{MODEL} Standby`. Audio-path states are shown only while the receiver is powered on.
+
+Mono is intentionally not included in the knob's sound-profile cycle, but the display shows `Mono` when that mode is selected from the receiver or its physical remote.
+
 ### Configurable inputs
 
 Long-press any input button to rename it. Renaming is available while the receiver is on, in standby, disconnected, or while Demo mode is active.
+
+Long-press the `INPUTS` label to open the `Arrange inputs` dialog. Long-press a row, drag it directly to any position in the list, and release it; then press `Done`. `Reset` restores the default order.
 
 Default buttons and eISCP input codes:
 
@@ -88,7 +97,7 @@ Default buttons and eISCP input codes:
 | PS3 | `video3` | `SLI02` |
 | CD | `cd` | `SLI23` |
 
-Custom names, the manual receiver IP, and the Auto-discover setting are stored in Android `SharedPreferences`. They survive normal application updates as long as the package ID and signing key remain unchanged and the application is updated in place rather than uninstalled.
+Custom names, input order, the manual receiver IP, and the Auto-discover setting are stored in Android `SharedPreferences`. They survive normal application updates as long as the package ID and signing key remain unchanged and the application is updated in place rather than uninstalled.
 
 ### Demo mode
 

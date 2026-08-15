@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -25,11 +26,15 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.*
 import com.moiseev.onkyoremote.network.*
 import com.moiseev.onkyoremote.ui.ReceiverState
@@ -52,15 +57,18 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         if (granted) action?.invoke()
         else state = state.copy(connected = false, error = "Local network access denied")
     }
-    private val inputs = listOf("dvd" to "10", "tape-1" to "20", "video1" to "00", "video2" to "01", "video3" to "02", "cd" to "23")
+    private val defaultInputs = listOf("dvd" to "10", "tape-1" to "20", "video1" to "00", "video2" to "01", "video3" to "02", "cd" to "23")
+    private var inputOrder by mutableStateOf(defaultInputs.map { it.second })
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("onkyo_settings", MODE_PRIVATE)
         autoDiscoveryEnabled = prefs.getBoolean("auto_discovery", (prefs.getString("receiver_ip", "") ?: "").isBlank())
+        val savedOrder = prefs.getString("input_order", "").orEmpty().split(',').filter { code -> defaultInputs.any { it.second == code } }.distinct()
+        inputOrder = savedOrder + defaultInputs.map { it.second }.filterNot(savedOrder::contains)
         state = state.copy(
             receiverIp = prefs.getString("receiver_ip", "") ?: "",
-            customInputNames = inputs.mapNotNull { (_, code) ->
+            customInputNames = defaultInputs.mapNotNull { (_, code) ->
                 prefs.getString("input_$code", null)?.let { code to it }
             }.toMap()
         )
@@ -181,6 +189,13 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         getSharedPreferences("onkyo_settings", MODE_PRIVATE).edit().putString("input_$code", name).apply()
     }
 
+    private fun saveInputOrder(order: List<String>) {
+        inputOrder = order
+        getSharedPreferences("onkyo_settings", MODE_PRIVATE).edit().putString("input_order", order.joinToString(",")).apply()
+    }
+
+    private fun orderedInputs() = inputOrder.mapNotNull { code -> defaultInputs.firstOrNull { it.second == code } }
+
     private fun saveReceiverIp(ip: String) {
         val normalized = ip.trim()
         autoDiscoveryEnabled = false
@@ -230,17 +245,26 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         val s = state
         val controlsAvailable = s.connected || demoMode
         var editingCode by remember { mutableStateOf<String?>(null) }
+        var arrangingInputs by remember { mutableStateOf(false) }
         var editingIp by remember { mutableStateOf(false) }
         var dialogIp by remember { mutableStateOf("") }
         var addressSearchRunning by remember { mutableStateOf(false) }
         var addressNotFound by remember { mutableStateOf(false) }
         var dialogAutoDiscovery by remember { mutableStateOf(false) }
         editingCode?.let { code ->
-            val defaultName = inputs.first { it.second == code }.first
+            val defaultName = defaultInputs.first { it.second == code }.first
             RenameInputDialog(
                 initialName = s.customInputNames[code] ?: defaultName,
                 onDismiss = { editingCode = null },
                 onSave = { saveInputName(code, it); editingCode = null }
+            )
+        }
+        if (arrangingInputs) {
+            ArrangeInputsDialog(
+                initialOrder = inputOrder,
+                labelFor = { code -> state.customInputNames[code] ?: defaultInputs.first { it.second == code }.first },
+                onDismiss = { arrangingInputs = false },
+                onSave = { saveInputOrder(it); arrangingInputs = false }
             )
         }
         if (editingIp) {
@@ -277,11 +301,13 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     discovering = s.discovering && !demoMode,
                     connectionHint = !controlsAvailable && s.receiver == null,
                     playbackStatus = when {
+                        !s.powerOn -> "Standby"
                         s.muted -> "Muted"
+                        s.listeningMode == "0F" -> "Mono"
                         s.soundProfile == "direct" -> "Direct"
-                        s.soundProfile == "optimizer_on" -> "Stereo MoON"
-                        s.soundProfile == "optimizer_off" -> "Stereo MoOFF"
-                        else -> if (s.musicOptimizer) "Stereo MoON" else "Stereo MoOFF"
+                        s.soundProfile == "optimizer_on" -> "Stereo, Music Optimizer On"
+                        s.soundProfile == "optimizer_off" -> "Stereo, Music Optimizer Off"
+                        else -> if (s.musicOptimizer) "Stereo, Music Optimizer On" else "Stereo, Music Optimizer Off"
                     },
                     editIp = {
                         dialogIp = if (autoDiscoveryEnabled) s.receiver?.host.orEmpty() else s.receiverIp
@@ -298,7 +324,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     if (!demoMode) client.send(if (next) "PWR01" else "PWR00")
                 }
                 Spacer(Modifier.height(13.dp))
-                PanelLabel("INPUTS")
+                PanelLabel("INPUTS", onLongClick = { arrangingInputs = true })
                 Spacer(Modifier.height(8.dp))
                 InputSelector(s.inputCode, controlsAvailable && s.powerOn, s.powerOn,
                     select = { state = state.copy(inputCode = it); if (!demoMode) client.send("SLI$it") },
@@ -392,17 +418,27 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(Modifier.size(6.dp).shadow(if (connected) 3.dp else 0.dp, CircleShape, spotColor = Color(0x8820B86C)).background(Brush.radialGradient(if (connected) listOf(Color(0xFFA6D7B8), Color(0xFF399C68), Color(0xFF185237)) else listOf(Color(0xFF737B83), Color(0xFF3D444B))), CircleShape).border(0.5.dp, if (connected) Color(0x554BA878) else Color(0x553D444B), CircleShape))
-            Spacer(Modifier.width(6.dp)); Text(if (discovering) "Searching" else name, color = if (connected) Color(0xFF83B99A) else Color(0xFF929BA4), fontSize = 16.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            if (!connectionHint) {
+            Spacer(Modifier.width(6.dp))
+            val displayName = if (discovering) "Searching" else name
+            val displayStatus = if (connectionHint) "" else if (connected) playbackStatus else "Disconnected"
+            val normalColor = if (connected) Color(0xFF83B99A) else Color(0xFF929BA4)
             Text(
-                " ${if (connected) playbackStatus else "Disconnected"}",
-                color = if (connected && playbackStatus == "Muted") Color(0xFFC86F6F)
-                else if (connected) Color(0xFF83B99A) else Color(0xFF7D858D),
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = normalColor)) { append(displayName) }
+                    if (displayStatus.isNotEmpty()) {
+                        append(" ")
+                        withStyle(SpanStyle(color = if (connected && playbackStatus == "Muted") Color(0xFFC86F6F) else if (connected) Color(0xFF83B99A) else Color(0xFF7D858D))) {
+                            append(displayStatus)
+                        }
+                    }
+                },
                 fontSize = 16.sp,
                 fontFamily = FontFamily.Monospace,
-                maxLines = 1
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.weight(1f).basicMarquee(iterations = Int.MAX_VALUE)
             )
-            }
         }
     }
 
@@ -484,14 +520,16 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }
     }
 
-    @Composable private fun PanelLabel(text: String) {
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable private fun PanelLabel(text: String, onLongClick: (() -> Unit)? = null) {
         Text(
             text = text,
             color = Color(0xFF858C95),
             fontSize = 10.sp,
             letterSpacing = 2.sp,
             fontWeight = FontWeight.Medium,
-            maxLines = 1
+            maxLines = 1,
+            modifier = if (onLongClick == null) Modifier else Modifier.combinedClickable(onClick = {}, onLongClick = onLongClick)
         )
     }
 
@@ -526,7 +564,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     }
 
     @Composable private fun InputSelector(selected: String, enabled: Boolean, receiverOn: Boolean, select: (String) -> Unit, rename: (String) -> Unit) {
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) { inputs.chunked(3).forEach { row ->
+        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) { orderedInputs().chunked(3).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { row.forEach { (defaultName, code) ->
                 InputButton(state.customInputNames[code] ?: defaultName, receiverOn && selected == code, enabled, { select(code) }, { rename(code) }, Modifier.weight(1f))
             } }
@@ -544,6 +582,77 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 Text(label, color = Color(0xFFBEC4C9), fontSize = 13.sp, lineHeight = 14.5.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
         }
+    }
+
+    @Composable private fun ArrangeInputsDialog(initialOrder: List<String>, labelFor: (String) -> String, onDismiss: () -> Unit, onSave: (List<String>) -> Unit) {
+        var order by remember(initialOrder) { mutableStateOf(initialOrder) }
+        val haptic = LocalHapticFeedback.current
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            containerColor = Color(0xFF171C22),
+            titleContentColor = Color(0xFFF0F2F5),
+            textContentColor = Color(0xFFCAD0D7),
+            title = { Text("Arrange inputs", fontSize = 22.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Long-press and drag a row to change the button order.", color = Color(0xFF9DA6AF), fontSize = 14.sp, lineHeight = 18.sp)
+                    Spacer(Modifier.height(4.dp))
+                    order.forEach { code ->
+                        var dragOffset by remember(code) { mutableFloatStateOf(0f) }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .offset(y = with(LocalDensity.current) { dragOffset.toDp() })
+                                .zIndex(if (dragOffset != 0f) 1f else 0f)
+                                .shadow(if (dragOffset != 0f) 7.dp else 1.dp, RoundedCornerShape(4.dp))
+                                .hardwareInputSurface(dragOffset != 0f)
+                                .pointerInput(code) {
+                                    var startIndex = 0
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            startIndex = order.indexOf(code)
+                                            dragOffset = 0f
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        },
+                                        onDragCancel = { dragOffset = 0f },
+                                        onDragEnd = {
+                                            val rowStep = 52.dp.toPx()
+                                            val target = (startIndex + (dragOffset / rowStep).roundToInt()).coerceIn(0, order.lastIndex)
+                                            if (target != startIndex) {
+                                                order = order.toMutableList().apply {
+                                                    removeAt(startIndex)
+                                                    add(target, code)
+                                                }
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            }
+                                            dragOffset = 0f
+                                        },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragOffset += amount.y
+                                        }
+                                    )
+                                }
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("≡", color = Color(0xFF78828B), fontSize = 24.sp)
+                            Spacer(Modifier.width(12.dp))
+                            Text(labelFor(code), color = Color(0xFFD5DADE), fontSize = 16.sp, modifier = Modifier.weight(1f))
+                            Text(code, color = Color(0xFF707983), fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { onSave(order) }) { Text("Done", fontSize = 16.sp) } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { order = defaultInputs.map { it.second } }) { Text("Reset", fontSize = 16.sp) }
+                    TextButton(onClick = onDismiss) { Text("Cancel", fontSize = 16.sp) }
+                }
+            }
+        )
     }
 
     @Composable private fun RenameInputDialog(initialName: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
