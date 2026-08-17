@@ -22,7 +22,7 @@
 - `Automatic (system route)` retains the original limited-broadcast behavior.
 - Selecting a local interface sends to that interface's directed subnet broadcast.
 - The interface choice is stored by system interface name, so it survives phone DHCP address changes.
-- Unicast fallback is limited to subnet sizes from `/22` through `/30` to avoid excessive probing.
+- The subnet prefix is read directly from the selected interface. Unicast fallback runs only for reported subnets no larger than `/22` (supported range `/22` through `/30`) to avoid excessive probing.
 - Auto-discover was validated on a physical Android phone with VPN both enabled and disabled.
 
 ## Requirements and limitations

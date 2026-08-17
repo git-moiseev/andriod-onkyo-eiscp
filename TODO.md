@@ -14,7 +14,9 @@ Completed:
 - [x] Use the selected interface for direct UDP receiver-information requests.
 - [x] Continue safely when a VPN rejects `Network.bindSocket()` with `EPERM`.
 - [x] Fall back to routed unicast eISCP probes when broadcast produces no reply.
-- [x] Limit unicast probing to reasonable `/22` through `/30` subnets.
+- [x] Read the real subnet prefix from the selected interface rather than guessing it.
+- [x] Limit unicast probing to interfaces reporting a subnet no larger than `/22`
+  (supported range `/22` through `/30`).
 - [x] Retain the manual IP while Auto-discover is enabled, but clearly disable and ignore the field.
 - [x] Reconnect automatically after network changes in both Auto-discover and Static IP modes.
 - [x] Use bounded reconnect backoff while the application is in the foreground.

@@ -137,7 +137,7 @@ On devices running API 37 or newer, the application requests local-network permi
 
 By default, Discovery sends an eISCP packet to `255.255.255.255:60128` through the system route. In the receiver connection dialog, a specific local interface can be selected instead, for example `Wi-Fi (wlan0) - 192.168.1.73`. The application then attempts to bind UDP to the corresponding Android network and sends to that interface's subnet broadcast address. The selection is stored by interface name, so it remains valid when the phone receives a new IP address.
 
-Some VPNs reject direct Android network binding with `EPERM` but still permit routed local traffic. This does not abort discovery: the application continues with broadcast and, if no receiver replies, falls back to unicast eISCP probes across the selected subnet. Probing is limited to subnet sizes from `/22` through `/30`.
+Some VPNs reject direct Android network binding with `EPERM` but still permit routed local traffic. This does not abort discovery: the application continues with broadcast and, if no receiver replies, falls back to unicast eISCP probes across the selected subnet. The subnet prefix is read directly from the selected interface; it is not guessed. To avoid sending thousands of packets, unicast probing runs only when the reported subnet is no larger than `/22` (supported range `/22` through `/30`).
 
 Discovery may still fail when:
 
