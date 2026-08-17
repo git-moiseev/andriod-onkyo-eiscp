@@ -1,36 +1,41 @@
-# Onkyo Remote 1.0.1
+# Onkyo Remote 1.0.2
 
 ## Highlights
 
-- Added customizable input-button ordering. Long-press `INPUTS`, then drag an input to any position. The order is saved between launches and application updates.
-- Added a hardware-style scrolling status display for long text. The receiver model and playback state scroll together, while short messages remain stationary.
-- Replaced abbreviated sound-mode labels with full descriptions: `Stereo, Music Optimizer On` and `Stereo, Music Optimizer Off`.
-- Added display-only support for Mono mode selected on the receiver or physical remote. Mono is intentionally not included in the application's sound-mode cycle.
-- Added `{MODEL} Standby` while the receiver is powered off but remains reachable over the network.
-- Improved Demo status display: Demo mode uses `DEMO` instead of a receiver model and follows the same playback and standby rules.
-- Expanded the README with a user-focused feature summary, Android requirements, limitations, gesture reference, and protocol acknowledgements.
+- Added selectable network interfaces for Auto-discover. The connection dialog now lists active broadcast-capable IPv4 networks such as `Wi-Fi (wlan0) - 192.168.1.73`.
+- Added reliable discovery while many VPN applications are active:
+  - Discovery attempts to bind to the selected Android network.
+  - A VPN rejection such as `EPERM` no longer aborts discovery.
+  - If broadcast receives no reply, the application falls back to targeted unicast eISCP probes across the selected local subnet.
+- Added automatic reconnection after network changes in both Auto-discover and Static IP modes.
+  - Retries begin after one second and back off to a maximum interval of 15 seconds.
+  - Retry activity stops while the application is in the background.
+  - The delay resets after a successful connection.
+- Clarified connection-mode behavior:
+  - While Auto-discover is enabled, the manual IP field is disabled and visually dimmed.
+  - The manual IP is retained for later use but ignored by Auto-discover.
+  - A discovered address is displayed as status information rather than replacing the saved manual IP.
+- Removed stale receiver model names from the disconnected display. Until a connection is established, the display shows `Long tap to connect`.
 
-## Controls
+## Network behavior
 
-- Tap an input button to select it; long-press it to rename it.
-- Long-press `INPUTS` to arrange the input buttons.
-- Drag the volume knob to change volume. For safety, a drag starting more than five points from the current volume is ignored.
-- Tap the knob center to cycle through Direct, Stereo with Music Optimizer On, and Stereo with Music Optimizer Off.
-- Long-press the knob center to mute or restore playback.
-- Long-press the status display to configure Auto-discover or a manual receiver IP address.
-- Long-press the `PHONES` socket to enter or leave Demo mode.
+- `Automatic (system route)` retains the original limited-broadcast behavior.
+- Selecting a local interface sends to that interface's directed subnet broadcast.
+- The interface choice is stored by system interface name, so it survives phone DHCP address changes.
+- Unicast fallback is limited to subnet sizes from `/22` through `/30` to avoid excessive probing.
+- Auto-discover was validated on a physical Android phone with VPN both enabled and disabled.
 
 ## Requirements and limitations
 
 - Android 8.0 (API 26) or newer.
 - The phone and receiver must be reachable on the same local network.
-- VPN, Wi-Fi client isolation, VLAN separation, or blocked broadcast traffic may prevent Auto-discover from working; manual IP configuration remains available.
+- Wi-Fi client isolation, VLAN separation, or an always-on VPN that blocks all traffic outside the VPN can still prevent discovery and control.
 - Network Control or Network Standby must be enabled on the receiver to power it on from standby.
 - Only the main zone and a fixed `0..80` volume range are currently supported.
 - Command availability varies between Onkyo and Integra models.
 
 ## Installation
 
-Install `OnkyoRemote.apk` over the previous version to preserve the receiver address, Auto-discover preference, input names, and input order. Do not uninstall the previous version first.
+Install `OnkyoRemote.apk` over the previous version to preserve the receiver address, Auto-discover preference, selected network interface, input names, and input order. Do not uninstall the previous version first.
 
 This APK is a debug-signed build. Android will install it as an update only if the existing application was signed with the same debug key.

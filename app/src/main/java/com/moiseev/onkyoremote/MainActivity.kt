@@ -49,10 +49,16 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     private companion object { const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK" }
     private var state by mutableStateOf(ReceiverState())
     private var autoDiscoveryEnabled by mutableStateOf(false)
+    private var discoveryInterfaceId by mutableStateOf("")
     private var demoMode by mutableStateOf(false)
     private var hasStartedOnce = false
+    private var activityStarted = false
     private lateinit var client: OnkyoClient
     private val commandHandler = Handler(Looper.getMainLooper())
+    private var reconnectDelayMs = 1_000L
+    private val reconnectRunnable = Runnable {
+        if (activityStarted && !demoMode && !state.connected && !state.discovering && (autoDiscoveryEnabled || state.receiverIp.isNotBlank())) reconnect()
+    }
     private val executor = Executors.newSingleThreadExecutor()
     private var pendingNetworkAction: (() -> Unit)? = null
     private val localNetworkPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -68,6 +74,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("onkyo_settings", MODE_PRIVATE)
         autoDiscoveryEnabled = prefs.getBoolean("auto_discovery", (prefs.getString("receiver_ip", "") ?: "").isBlank())
+        discoveryInterfaceId = prefs.getString("discovery_interface", "") ?: ""
         val savedOrder = prefs.getString("input_order", "").orEmpty().split(',').filter { code -> defaultInputs.any { it.second == code } }.distinct()
         inputOrder = savedOrder + defaultInputs.map { it.second }.filterNot(savedOrder::contains)
         state = state.copy(
@@ -83,20 +90,30 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
 
     override fun onStart() {
         super.onStart()
+        activityStarted = true
         if (hasStartedOnce) reconnect() else hasStartedOnce = true
     }
 
     override fun onStop() {
+        activityStarted = false
+        commandHandler.removeCallbacks(reconnectRunnable)
         client.disconnect()
         state = state.copy(connected = false)
         super.onStop()
     }
 
     private fun reconnect() {
-        if (demoMode) return
+        if (demoMode || state.connected || state.discovering) return
         withLocalNetworkPermission {
             if (autoDiscoveryEnabled || state.receiverIp.isBlank()) discover() else connectConfiguredReceiver()
         }
+    }
+
+    private fun scheduleReconnect() {
+        if (!activityStarted || demoMode || state.connected || (!autoDiscoveryEnabled && state.receiverIp.isBlank())) return
+        commandHandler.removeCallbacks(reconnectRunnable)
+        commandHandler.postDelayed(reconnectRunnable, reconnectDelayMs)
+        reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(15_000L)
     }
 
     private fun toggleDemoMode() {
@@ -120,16 +137,24 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         state = state.copy(discovering = true)
         executor.execute {
             try {
-                val found = OnkyoDiscovery.discover()
+                val found = OnkyoDiscovery.discover(this@MainActivity, interfaceId = discoveryInterfaceId)
                 runOnUiThread {
                     state = state.copy(discovering = false, discovered = found)
                     val previousId = state.receiver?.identifier.orEmpty()
                     val preferred = found.firstOrNull { previousId.isNotBlank() && it.identifier == previousId }
                         ?: found.firstOrNull { !autoDiscoveryEnabled && it.host == state.receiverIp }
                         ?: found.singleOrNull()
-                    if (!demoMode) preferred?.let(client::connect)
+                    if (!demoMode) {
+                        if (preferred != null) client.connect(preferred)
+                        else scheduleReconnect()
+                    }
                 }
-            } catch (e: Exception) { runOnUiThread { state = state.copy(discovering = false, error = e.message) } }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    state = state.copy(discovering = false, error = e.message)
+                    scheduleReconnect()
+                }
+            }
         }
     }
 
@@ -138,7 +163,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         if (host.isBlank()) return
         client.connect(ReceiverInfo(host = host))
         executor.execute {
-            val info = OnkyoDiscovery.getInfo(host)
+            val info = OnkyoDiscovery.getInfo(this@MainActivity, host, interfaceId = discoveryInterfaceId)
             if (info != null) runOnUiThread {
                 Log.i("OnkyoEiscp", "Applying direct receiver info: model='${info.modelName}'")
                 state = state.copy(receiver = info)
@@ -146,10 +171,15 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }
     }
     override fun onConnected(info: ReceiverInfo) {
+        commandHandler.removeCallbacks(reconnectRunnable)
+        reconnectDelayMs = 1_000L
         val known = state.receiver?.takeIf { it.host == info.host && it.modelName.isNotBlank() }
         state = state.copy(connected = true, receiver = known ?: info, error = null)
     }
-    override fun onDisconnected(reason: String?) { state = state.copy(connected = false, error = reason) }
+    override fun onDisconnected(reason: String?) {
+        state = state.copy(connected = false, error = reason)
+        scheduleReconnect()
+    }
     override fun onMessage(command: String) {
         val c = command.trim().let { if (it.startsWith("!") && it.length > 1) it.substring(2) else it }
         Log.d("OnkyoEiscp", "UI RX raw='${EiscpProtocol.debugText(command)}' normalized='${EiscpProtocol.debugText(c)}'")
@@ -211,24 +241,19 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
     }
 
     private fun saveAutoDiscoveryAddress(ip: String) {
-        val host = ip.trim()
+        val rememberedHost = ip.trim()
         autoDiscoveryEnabled = true
         getSharedPreferences("onkyo_settings", MODE_PRIVATE).edit()
-            .remove("receiver_ip").putBoolean("auto_discovery", true).apply()
+            .putString("receiver_ip", rememberedHost).putBoolean("auto_discovery", true).apply()
         client.disconnect()
-        state = state.copy(receiverIp = "", connected = false, error = null)
-        withLocalNetworkPermission {
-            client.connect(ReceiverInfo(host = host))
-            executor.execute {
-                OnkyoDiscovery.getInfo(host)?.let { info -> runOnUiThread { state = state.copy(receiver = info) } }
-            }
-        }
+        state = state.copy(receiverIp = rememberedHost, connected = false, error = null)
+        withLocalNetworkPermission { discover() }
     }
 
     private fun discoverReceiverAddress(onResult: (String?) -> Unit) {
         withLocalNetworkPermission {
             executor.execute {
-                val info = try { OnkyoDiscovery.discover().firstOrNull() } catch (e: Exception) {
+                val info = try { OnkyoDiscovery.discover(this@MainActivity, interfaceId = discoveryInterfaceId).firstOrNull() } catch (e: Exception) {
                     Log.e("OnkyoEiscp", "Address auto-discovery failed", e)
                     null
                 }
@@ -245,6 +270,11 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         }
     }
 
+    private fun saveDiscoveryInterface(id: String) {
+        discoveryInterfaceId = id
+        getSharedPreferences("onkyo_settings", MODE_PRIVATE).edit().putString("discovery_interface", id).apply()
+    }
+
     @Composable private fun ReceiverScreen() {
         val s = state
         val controlsAvailable = s.connected || demoMode
@@ -255,6 +285,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         var addressSearchRunning by remember { mutableStateOf(false) }
         var addressNotFound by remember { mutableStateOf(false) }
         var dialogAutoDiscovery by remember { mutableStateOf(false) }
+        var discoveryInterfaces by remember { mutableStateOf(emptyList<OnkyoDiscovery.DiscoveryInterface>()) }
         editingCode?.let { code ->
             val defaultName = defaultInputs.first { it.second == code }.first
             RenameInputDialog(
@@ -284,6 +315,9 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                 notFound = addressNotFound,
                 alwaysDiscover = dialogAutoDiscovery,
                 onAlwaysDiscoverChange = { dialogAutoDiscovery = it },
+                discoveryInterfaces = discoveryInterfaces,
+                selectedInterfaceId = discoveryInterfaceId,
+                onInterfaceSelected = ::saveDiscoveryInterface,
                 onAutoDiscover = {
                     dialogIp = ""
                     addressNotFound = false
@@ -301,9 +335,9 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             Column(Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).hardwarePanelBackground().border(1.dp, Color(0xFF262C32), RoundedCornerShape(14.dp)).padding(horizontal = 24.dp, vertical = 17.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 ReceiverStatus(
                     connected = controlsAvailable,
-                    name = if (demoMode) "DEMO" else if (!controlsAvailable && s.receiver == null) "Long tap to connect" else name(),
+                    name = if (demoMode) "DEMO" else if (!controlsAvailable) "Long tap to connect" else name(),
                     discovering = s.discovering && !demoMode,
-                    connectionHint = !controlsAvailable && s.receiver == null,
+                    connectionHint = !controlsAvailable,
                     playbackStatus = when {
                         !s.powerOn -> "Standby"
                         s.muted -> "Muted"
@@ -314,7 +348,8 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                         else -> if (s.musicOptimizer) "Stereo, Music Optimizer On" else "Stereo, Music Optimizer Off"
                     },
                     editIp = {
-                        dialogIp = if (autoDiscoveryEnabled) s.receiver?.host.orEmpty() else s.receiverIp
+                        discoveryInterfaces = OnkyoDiscovery.availableInterfaces()
+                        dialogIp = s.receiverIp
                         addressNotFound = false
                         addressSearchRunning = false
                         dialogAutoDiscovery = autoDiscoveryEnabled
@@ -741,12 +776,10 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
         )
     }
 
-    @Composable private fun ReceiverIpDialog(initialIp: String, discoveredIp: String, searching: Boolean, notFound: Boolean, alwaysDiscover: Boolean, onAlwaysDiscoverChange: (Boolean) -> Unit, onDismiss: () -> Unit, onSave: (String) -> Unit, onAutoDiscover: () -> Unit) {
+    @Composable private fun ReceiverIpDialog(initialIp: String, discoveredIp: String, searching: Boolean, notFound: Boolean, alwaysDiscover: Boolean, onAlwaysDiscoverChange: (Boolean) -> Unit, discoveryInterfaces: List<OnkyoDiscovery.DiscoveryInterface>, selectedInterfaceId: String, onInterfaceSelected: (String) -> Unit, onDismiss: () -> Unit, onSave: (String) -> Unit, onAutoDiscover: () -> Unit) {
         var value by remember(initialIp) { mutableStateOf(initialIp) }
-        LaunchedEffect(discoveredIp, searching, notFound) {
-            if (searching || notFound || discoveredIp.isNotEmpty()) value = discoveredIp
-        }
         val valid = isValidIpv4(value)
+        val canConnect = alwaysDiscover || valid
         AlertDialog(
             onDismissRequest = onDismiss,
             containerColor = Color(0xFF171C22),
@@ -755,12 +788,43 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
             text = {
                 Column {
                     Text(
-                        "Turn off all VPNs and make sure your phone is connected to the same network as the receiver.",
+                        "Choose the local network connected to the receiver. If discovery fails, turn off VPNs and check that both devices are on the same network.",
                         color = Color(0xFFB8C0C9),
                         fontSize = 14.sp,
                         lineHeight = 19.sp
                     )
                     Spacer(Modifier.height(10.dp))
+                    Text("Discovery network", color = Color(0xFFD4D9DF), fontSize = 14.sp)
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !searching) { onInterfaceSelected("") },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedInterfaceId.isBlank(),
+                            onClick = { if (!searching) onInterfaceSelected("") },
+                            enabled = !searching,
+                            colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF299B66))
+                        )
+                        Text("Automatic (system route)", color = Color(0xFFB8C0C9), fontSize = 13.sp)
+                    }
+                    discoveryInterfaces.forEach { network ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable(enabled = !searching) { onInterfaceSelected(network.id) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selectedInterfaceId == network.id,
+                                onClick = { if (!searching) onInterfaceSelected(network.id) },
+                                enabled = !searching,
+                                colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF299B66))
+                            )
+                            Text(network.label, color = Color(0xFFD4D9DF), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (discoveryInterfaces.isEmpty()) {
+                        Text("No broadcast-capable local interfaces found.", color = Color(0xFF8D969F), fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(4.dp))
                     TextButton(
                         enabled = !searching,
                         onClick = onAutoDiscover,
@@ -781,13 +845,16 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     OutlinedTextField(
                         value = value,
                         onValueChange = { value = it.filterNot(Char::isWhitespace).take(253) },
+                        enabled = !alwaysDiscover,
                         label = { Text("Receiver IP address", fontSize = 16.sp) },
                         placeholder = { Text("192.168.1.40", fontSize = 16.sp) },
-                        isError = value.isNotEmpty() && !valid,
+                        isError = !alwaysDiscover && value.isNotEmpty() && !valid,
                         supportingText = {
                             when {
                                 searching -> Text("Searching…")
                                 notFound -> Text("Not found", color = MaterialTheme.colorScheme.error)
+                                alwaysDiscover && discoveredIp.isNotEmpty() -> Text("Found: $discoveredIp")
+                                alwaysDiscover -> Text("Saved for manual mode; ignored while Auto-discover is enabled.")
                                 value.isNotEmpty() && !valid -> Text("Enter a valid IPv4 address, e.g. 192.168.1.40")
                             }
                         },
@@ -799,7 +866,7 @@ class MainActivity : ComponentActivity(), OnkyoClient.Listener {
                     )
                 }
             },
-            confirmButton = { TextButton(enabled = valid, onClick = { onSave(value) }) { Text("Connect", fontSize = 16.sp) } },
+            confirmButton = { TextButton(enabled = canConnect, onClick = { onSave(value) }) { Text("Connect", fontSize = 16.sp) } },
             dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", fontSize = 16.sp) } }
         )
     }

@@ -1,17 +1,91 @@
 package com.moiseev.onkyoremote.network
 
+import android.content.Context
+import android.net.ConnectivityManager
 import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
 object OnkyoDiscovery {
     private const val TAG = "OnkyoEiscp"
 
+    data class DiscoveryInterface(
+        val id: String,
+        val label: String,
+        val address: InetAddress,
+        val broadcast: InetAddress,
+        val prefixLength: Short
+    )
+
+    fun availableInterfaces(): List<DiscoveryInterface> = try {
+        NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { network ->
+                network.interfaceAddresses.mapNotNull { interfaceAddress ->
+                    val address = interfaceAddress.address
+                    val broadcast = interfaceAddress.broadcast
+                    if (address !is Inet4Address || broadcast !is Inet4Address) null
+                    else DiscoveryInterface(
+                        id = network.name,
+                        label = "${friendlyInterfaceName(network.name)} (${network.name}) — ${address.hostAddress}",
+                        address = address,
+                        broadcast = broadcast,
+                        prefixLength = interfaceAddress.networkPrefixLength
+                    )
+                }
+            }
+            .sortedBy { it.label }
+    } catch (e: Exception) {
+        Log.e(TAG, "Unable to enumerate discovery interfaces", e)
+        emptyList()
+    }
+
+    private fun friendlyInterfaceName(name: String): String = when {
+        name.startsWith("wlan", ignoreCase = true) -> "Wi-Fi"
+        name.startsWith("eth", ignoreCase = true) -> "Ethernet"
+        name.startsWith("usb", ignoreCase = true) -> "USB network"
+        else -> "Network"
+    }
+
+    private fun selectedInterface(id: String?): DiscoveryInterface? =
+        id?.takeIf(String::isNotBlank)?.let { requested -> availableInterfaces().firstOrNull { it.id == requested } }
+
+    @Suppress("DEPRECATION")
+    private fun bindToAndroidNetwork(context: Context, interfaceName: String, socket: DatagramSocket): Boolean {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val network = connectivity.allNetworks.firstOrNull {
+            connectivity.getLinkProperties(it)?.interfaceName == interfaceName
+        }
+        if (network == null) {
+            Log.w(TAG, "Android Network not found for interface $interfaceName")
+            return false
+        }
+        return try {
+            network.bindSocket(socket)
+            Log.d(TAG, "Bound UDP socket to Android Network for $interfaceName")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Android Network binding denied for $interfaceName (${e.message}); using routed unicast fallback")
+            false
+        }
+    }
+
     /** Queries the receiver identity directly, equivalent to python-eiscp's receiver.info. */
-    fun getInfo(host: String, timeoutMs: Int = 1500): ReceiverInfo? {
-        DatagramSocket().use { socket ->
+    fun getInfo(context: Context, host: String, timeoutMs: Int = 1500, interfaceId: String? = null): ReceiverInfo? {
+        val selected = selectedInterface(interfaceId)
+        if (!interfaceId.isNullOrBlank() && selected == null) {
+            Log.w(TAG, "Info query interface is no longer available: $interfaceId")
+            return null
+        }
+        DatagramSocket(null).use { socket ->
+            socket.reuseAddress = true
+            val networkBound = selected != null && bindToAndroidNetwork(context, selected.id, socket)
+            socket.bind(InetSocketAddress(if (networkBound) selected?.address else null, 0))
             socket.soTimeout = timeoutMs
             val request = EiscpProtocol.packet("ECNQSTN", destination = 'x')
             val target = InetAddress.getByName(host)
@@ -39,15 +113,23 @@ object OnkyoDiscovery {
         }
     }
 
-    fun discover(timeoutMs: Int = 1500): List<ReceiverInfo> {
+    fun discover(context: Context, timeoutMs: Int = 1500, interfaceId: String? = null): List<ReceiverInfo> {
         val found = linkedMapOf<String, ReceiverInfo>()
-        DatagramSocket().use { socket ->
+        val selected = selectedInterface(interfaceId)
+        if (!interfaceId.isNullOrBlank() && selected == null) {
+            Log.w(TAG, "Discovery interface is no longer available: $interfaceId")
+            return emptyList()
+        }
+        DatagramSocket(null).use { socket ->
+            socket.reuseAddress = true
+            val networkBound = selected != null && bindToAndroidNetwork(context, selected.id, socket)
+            socket.bind(InetSocketAddress(if (networkBound) selected?.address else null, 0))
             socket.broadcast = true
             socket.soTimeout = 250
             val request = EiscpProtocol.packet("ECNQSTN", destination = 'x')
-            val broadcast = InetAddress.getByName("255.255.255.255")
+            val broadcast = selected?.broadcast ?: InetAddress.getByName("255.255.255.255")
             try {
-                Log.d(TAG, "Discovery TX 255.255.255.255:60128 command='!xECNQSTN\\r'")
+                Log.d(TAG, "Discovery TX ${broadcast.hostAddress}:60128 via ${selected?.label ?: "system route"} command='!xECNQSTN\\r'")
                 socket.send(DatagramPacket(request, request.size, broadcast, 60128))
             } catch (e: Exception) {
                 Log.e(TAG, "Discovery send failed", e)
@@ -73,7 +155,61 @@ object OnkyoDiscovery {
                 }
             }
         }
+        if (found.isEmpty() && selected != null) {
+            found.putAll(discoverByUnicast(selected, timeoutMs))
+        }
         return found.values.toList()
+    }
+
+    private fun discoverByUnicast(selected: DiscoveryInterface, timeoutMs: Int): Map<String, ReceiverInfo> {
+        val prefix = selected.prefixLength.toInt()
+        val hostCount = if (prefix in 22..30) 1L shl (32 - prefix) else {
+            Log.w(TAG, "Skipping unicast fallback for ${selected.label}: unsupported /$prefix subnet size")
+            return emptyMap()
+        }
+        val addressBytes = selected.address.address
+        val addressValue = addressBytes.fold(0L) { value, byte -> (value shl 8) or (byte.toInt() and 0xFF).toLong() }
+        val mask = (0xFFFFFFFFL shl (32 - prefix)) and 0xFFFFFFFFL
+        val network = addressValue and mask
+        val firstHost = network + 1
+        val lastHost = network + hostCount - 2
+        val request = EiscpProtocol.packet("ECNQSTN", destination = 'x')
+        val found = linkedMapOf<String, ReceiverInfo>()
+
+        DatagramSocket().use { socket ->
+            socket.soTimeout = 100
+            Log.i(TAG, "Broadcast produced no reply; probing ${lastHost - firstHost + 1} local addresses by unicast")
+            for (value in firstHost..lastHost) {
+                if (value == addressValue) continue
+                val targetBytes = byteArrayOf(
+                    (value ushr 24).toByte(), (value ushr 16).toByte(),
+                    (value ushr 8).toByte(), value.toByte()
+                )
+                try {
+                    socket.send(DatagramPacket(request, request.size, InetAddress.getByAddress(targetBytes), 60128))
+                } catch (_: Exception) {
+                    // Individual unreachable addresses are expected during a subnet probe.
+                }
+            }
+
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    val buffer = ByteArray(2048)
+                    val reply = DatagramPacket(buffer, buffer.size)
+                    socket.receive(reply)
+                    val body = parseDatagram(reply.data.copyOf(reply.length))
+                    val host = reply.address.hostAddress ?: continue
+                    parseDiscoveryReply(body, host)?.let { info ->
+                        Log.i(TAG, "Unicast discovery parsed: $info")
+                        found[info.identifier.ifBlank { info.host }] = info
+                    }
+                } catch (_: SocketTimeoutException) {
+                    // Continue until the overall fallback timeout expires.
+                }
+            }
+        }
+        return found
     }
 
     private fun parseDatagram(bytes: ByteArray): String {

@@ -4,7 +4,7 @@ Native Android remote control for Onkyo and Integra receivers. It communicates t
 
 ## What it can do
 
-- Automatically discover compatible eISCP receivers on the local network, or connect to a manually entered IP address.
+- Automatically discover compatible eISCP receivers through a selected local network interface, or connect to a manually entered IP address.
 - Keep finding a receiver through Auto-discover if its DHCP address changes.
 - Turn the receiver on and off.
 - Select an input with a short tap.
@@ -14,7 +14,7 @@ Native Android remote control for Onkyo and Integra receivers. It communicates t
 - Switch between Direct, Stereo with Music Optimizer ON, and Stereo with Music Optimizer OFF by tapping the center of the knob.
 - Mute or restore playback with a long press on the knob center.
 - Follow power, input, volume, mute, and sound-mode changes made on the receiver or another remote.
-- Reconnect automatically when the application returns to the foreground.
+- Reconnect automatically after network changes and when the application returns to the foreground, in both Auto-discover and Static IP modes.
 - Run in Demo mode without a receiver, using a long press on the `PHONES` socket.
 
 ![Onkyo Remote](doc/screen.jpg)
@@ -29,12 +29,14 @@ The interface deliberately resembles a dark hi-fi front panel rather than a stan
 
 ### Receiver connection
 
-- Automatic receiver discovery using the standard eISCP UDP broadcast on port `60128`.
+- Automatic receiver discovery using the standard eISCP UDP broadcast on port `60128`, with an optional user-selected local network interface.
+- VPN-tolerant unicast discovery fallback when network binding is denied or broadcast replies are blocked.
 - Manual IP address configuration.
 - Persistent Auto-discover mode for receivers whose DHCP address can change.
 - Receiver model and identifier obtained from the eISCP discovery response.
 - Persistent TCP connection for commands and unsolicited receiver updates.
-- Automatic reconnect when the application returns to the foreground.
+- Automatic reconnect after connection loss, VPN/network changes, and return to the foreground in both Auto-discover and Static IP modes.
+- Foreground retry backoff from one second to a maximum interval of 15 seconds.
 - Connection setup by long-pressing the status display.
 - Receiver and playback state shown on a hardware-style LED display.
 
@@ -97,7 +99,7 @@ Default buttons and eISCP input codes:
 | PS3 | `video3` | `SLI02` |
 | CD | `cd` | `SLI23` |
 
-Custom names, input order, the manual receiver IP, and the Auto-discover setting are stored in Android `SharedPreferences`. They survive normal application updates as long as the package ID and signing key remain unchanged and the application is updated in place rather than uninstalled.
+Custom names, input order, the manual receiver IP, the selected discovery interface, and the Auto-discover setting are stored in Android `SharedPreferences`. The manual IP is retained but ignored while Auto-discover is enabled. These settings survive normal application updates as long as the package ID and signing key remain unchanged and the application is updated in place rather than uninstalled.
 
 ### Demo mode
 
@@ -133,16 +135,20 @@ On devices running API 37 or newer, the application requests local-network permi
 
 ## Discovery limitations
 
-Discovery sends an eISCP packet to the limited broadcast address `255.255.255.255:60128`. It may fail when:
+By default, Discovery sends an eISCP packet to `255.255.255.255:60128` through the system route. In the receiver connection dialog, a specific local interface can be selected instead, for example `Wi-Fi (wlan0) - 192.168.1.73`. The application then attempts to bind UDP to the corresponding Android network and sends to that interface's subnet broadcast address. The selection is stored by interface name, so it remains valid when the phone receives a new IP address.
 
-- a VPN is active;
+Some VPNs reject direct Android network binding with `EPERM` but still permit routed local traffic. This does not abort discovery: the application continues with broadcast and, if no receiver replies, falls back to unicast eISCP probes across the selected subnet. Probing is limited to subnet sizes from `/22` through `/30`.
+
+Discovery may still fail when:
+
+- an always-on VPN blocks every connection outside the VPN;
 - the phone is using mobile data or a different Wi-Fi/VLAN;
 - Wi-Fi client isolation is enabled;
 - the router or access point blocks broadcast traffic;
-- Android routes the broadcast through an unexpected network interface;
+- the wrong local interface is selected or the saved interface is unavailable;
 - the application runs in an emulator behind NAT.
 
-Disable VPN connections and ensure that the phone is connected to the same network as the receiver. If discovery still fails, configure the receiver IP manually. Discovery selects a previously known receiver by its identifier when possible; if several unknown receivers answer simultaneously, automatic selection may require manual configuration.
+Ensure that the phone is connected to the receiver's local network and select the corresponding interface in the connection dialog. Many VPN configurations work through the unicast fallback, but a VPN policy that blocks all traffic outside the tunnel must be disabled or configured to allow local-network access. If discovery still fails, configure the receiver IP manually. Discovery selects a previously known receiver by its identifier when possible; if several unknown receivers answer simultaneously, automatic selection may require manual configuration.
 
 ## Other limitations
 
